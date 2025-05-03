@@ -7,11 +7,27 @@ public class Order {
     private final UUID id;
     private final int building;
     private final int room;
+    private OrderStatus status;
 
     public Order(int building, int room) {
+        validateBuilding(building);
+        validateRoom(room);
         this.id = UUID.randomUUID();
         this.building = building;
         this.room = room;
+        this.status = OrderStatus.CREATED;
+    }
+
+    private void validateBuilding(int building) {
+        if (building <= 0) {
+            throw new IllegalArgumentException("Building number must be positive");
+        }
+    }
+
+    private void validateRoom(int room) {
+        if (room <= 0) {
+            throw new IllegalArgumentException("Room number must be positive");
+        }
     }
 
     public UUID getId() {
@@ -24,6 +40,14 @@ public class Order {
 
     public int getRoom() {
         return room;
+    }
+
+    public OrderStatus getStatus() {
+        return status;
+    }
+
+    public void setStatus(OrderStatus status) {
+        this.status = status;
     }
 
     @Override

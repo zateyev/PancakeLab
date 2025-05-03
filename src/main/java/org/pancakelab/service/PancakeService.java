@@ -1,123 +1,177 @@
 package org.pancakelab.service;
 
+import org.pancakelab.exception.OrderNotFoundException;
 import org.pancakelab.model.Order;
-import org.pancakelab.model.pancakes.*;
+import org.pancakelab.model.OrderStatus;
+import org.pancakelab.model.pancakes.Pancake;
 
-import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-public class PancakeService {
-    private List<Order>         orders          = new ArrayList<>();
-    private Set<UUID>           completedOrders = new HashSet<>();
-    private Set<UUID>           preparedOrders  = new HashSet<>();
-    private List<PancakeRecipe> pancakes        = new ArrayList<>();
+public class PancakeService implements IPancakeService {
+    private final Map<UUID, Order> orders = new ConcurrentHashMap<>();
+    private final Map<UUID, List<Pancake>> orderPancakes = new ConcurrentHashMap<>();
+    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 
+    @Override
     public Order createOrder(int building, int room) {
         Order order = new Order(building, room);
-        orders.add(order);
+        orders.put(order.getId(), order);
+        orderPancakes.put(order.getId(), new CopyOnWriteArrayList<>());
         return order;
     }
 
-    public void addDarkChocolatePancake(UUID orderId, int count) {
-        for (int i = 0; i < count; ++i) {
-            addPancake(new DarkChocolatePancake(),
-                       orders.stream().filter(o -> o.getId().equals(orderId)).findFirst().get());
+    @Override
+    public void addPancake(UUID orderId, Pancake pancake) {
+        lock.writeLock().lock();
+        try {
+            if (!orders.containsKey(orderId)) {
+                throw new OrderNotFoundException(orderId.toString());
+            }
+            Order order = orders.get(orderId);
+            if (order.getStatus() != OrderStatus.CREATED) {
+                throw new IllegalStateException("Cannot add pancakes to an order that is not in CREATED state");
+            }
+            OrderLog.logAddPancake(order, pancake, orderPancakes.get(orderId));
+            orderPancakes.get(orderId).add(pancake);
+        } finally {
+            lock.writeLock().unlock();
         }
     }
 
-    public void addDarkChocolateWhippedCreamPancake(UUID orderId, int count) {
-        for (int i = 0; i < count; ++i) {
-            addPancake(new DarkChocolateWhippedCreamPancake(),
-                       orders.stream().filter(o -> o.getId().equals(orderId)).findFirst().get());
+    @Override
+    public List<Pancake> viewOrder(UUID orderId) {
+        lock.readLock().lock();
+        try {
+            if (!orders.containsKey(orderId)) {
+                throw new OrderNotFoundException(orderId.toString());
+            }
+            return new ArrayList<>(orderPancakes.get(orderId));
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
-    public void addDarkChocolateWhippedCreamHazelnutsPancake(UUID orderId, int count) {
-        for (int i = 0; i < count; ++i) {
-            addPancake(new DarkChocolateWhippedCreamHazelnutsPancake(),
-                       orders.stream().filter(o -> o.getId().equals(orderId)).findFirst().get());
+    @Override
+    public void removePancake(UUID orderId, UUID pancakeId) {
+        lock.writeLock().lock();
+        try {
+            if (!orders.containsKey(orderId)) {
+                throw new OrderNotFoundException(orderId.toString());
+            }
+            Order order = orders.get(orderId);
+            if (order.getStatus() != OrderStatus.CREATED) {
+                throw new IllegalStateException("Cannot remove pancakes from an order that is not in CREATED state");
+            }
+            List<Pancake> pancakes = orderPancakes.get(orderId);
+            pancakes.removeIf(p -> p.getId().equals(pancakeId));
+            OrderLog.logRemovePancakes(order, pancakeId, pancakes);
+        } finally {
+            lock.writeLock().unlock();
         }
     }
 
-    public void addMilkChocolatePancake(UUID orderId, int count) {
-        for (int i = 0; i < count; ++i) {
-            addPancake(new MilkChocolatePancake(),
-                       orders.stream().filter(o -> o.getId().equals(orderId)).findFirst().get());
-        }
-    }
-
-    public void addMilkChocolateHazelnutsPancake(UUID orderId, int count) {
-        for (int i = 0; i < count; ++i) {
-            addPancake(new MilkChocolateHazelnutsPancake(),
-                       orders.stream().filter(o -> o.getId().equals(orderId)).findFirst().get());
-        }
-    }
-
-    public List<String> viewOrder(UUID orderId) {
-        return pancakes.stream()
-                       .filter(pancake -> pancake.getOrderId().equals(orderId))
-                       .map(PancakeRecipe::description).toList();
-    }
-
-    private void addPancake(PancakeRecipe pancake, Order order) {
-        pancake.setOrderId(order.getId());
-        pancakes.add(pancake);
-
-        OrderLog.logAddPancake(order, pancake.description(), pancakes);
-    }
-
-    public void removePancakes(String description, UUID orderId, int count) {
-        final AtomicInteger removedCount = new AtomicInteger(0);
-        pancakes.removeIf(pancake -> {
-            return pancake.getOrderId().equals(orderId) &&
-                   pancake.description().equals(description) &&
-                   removedCount.getAndIncrement() < count;
-        });
-
-        Order order = orders.stream().filter(o -> o.getId().equals(orderId)).findFirst().get();
-        OrderLog.logRemovePancakes(order, description, removedCount.get(), pancakes);
-    }
-
+    @Override
     public void cancelOrder(UUID orderId) {
-        Order order = orders.stream().filter(o -> o.getId().equals(orderId)).findFirst().get();
-        OrderLog.logCancelOrder(order, this.pancakes);
-
-        pancakes.removeIf(pancake -> pancake.getOrderId().equals(orderId));
-        orders.removeIf(o -> o.getId().equals(orderId));
-        completedOrders.removeIf(u -> u.equals(orderId));
-        preparedOrders.removeIf(u -> u.equals(orderId));
-
-        OrderLog.logCancelOrder(order,pancakes);
+        lock.writeLock().lock();
+        try {
+            if (!orders.containsKey(orderId)) {
+                throw new OrderNotFoundException(orderId.toString());
+            }
+            Order order = orders.get(orderId);
+            order.setStatus(OrderStatus.CANCELLED);
+            OrderLog.logCancelOrder(order, orderPancakes.get(orderId));
+            orders.remove(orderId);
+            orderPancakes.remove(orderId);
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
+    @Override
     public void completeOrder(UUID orderId) {
-        completedOrders.add(orderId);
+        lock.writeLock().lock();
+        try {
+            if (!orders.containsKey(orderId)) {
+                throw new OrderNotFoundException(orderId.toString());
+            }
+            Order order = orders.get(orderId);
+            if (order.getStatus() != OrderStatus.CREATED) {
+                throw new IllegalStateException("Cannot complete an order that is not in CREATED state");
+            }
+            order.setStatus(OrderStatus.COMPLETED);
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
-    public Set<UUID> listCompletedOrders() {
-        return completedOrders;
+    @Override
+    public List<Order> listCompletedOrders() {
+        lock.readLock().lock();
+        try {
+            return orders.values().stream()
+                    .filter(order -> order.getStatus() == OrderStatus.COMPLETED)
+                    .toList();
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
+    @Override
     public void prepareOrder(UUID orderId) {
-        preparedOrders.add(orderId);
-        completedOrders.removeIf(u -> u.equals(orderId));
+        lock.writeLock().lock();
+        try {
+            if (!orders.containsKey(orderId)) {
+                throw new OrderNotFoundException(orderId.toString());
+            }
+            Order order = orders.get(orderId);
+            if (order.getStatus() != OrderStatus.COMPLETED) {
+                throw new IllegalStateException("Cannot prepare an order that is not in COMPLETED state");
+            }
+            order.setStatus(OrderStatus.PREPARED);
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
-    public Set<UUID> listPreparedOrders() {
-        return preparedOrders;
+    @Override
+    public List<Order> listPreparedOrders() {
+        lock.readLock().lock();
+        try {
+            return orders.values().stream()
+                    .filter(order -> order.getStatus() == OrderStatus.PREPARED)
+                    .toList();
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
-    public Object[] deliverOrder(UUID orderId) {
-        if (!preparedOrders.contains(orderId)) return null;
-
-        Order order = orders.stream().filter(o -> o.getId().equals(orderId)).findFirst().get();
-        List<String> pancakesToDeliver = viewOrder(orderId);
-        OrderLog.logDeliverOrder(order, this.pancakes);
-
-        pancakes.removeIf(pancake -> pancake.getOrderId().equals(orderId));
-        orders.removeIf(o -> o.getId().equals(orderId));
-        preparedOrders.removeIf(u -> u.equals(orderId));
-
-        return new Object[] {order, pancakesToDeliver};
+    @Override
+    public DeliveryInfo deliverOrder(UUID orderId) {
+        lock.writeLock().lock();
+        try {
+            if (!orders.containsKey(orderId)) {
+                throw new OrderNotFoundException(orderId.toString());
+            }
+            Order order = orders.get(orderId);
+            if (order.getStatus() != OrderStatus.PREPARED) {
+                throw new IllegalStateException("Cannot deliver an order that is not in PREPARED state");
+            }
+            order.setStatus(OrderStatus.DELIVERED);
+            List<String> pancakeDescriptions = orderPancakes.get(orderId).stream()
+                    .map(Pancake::getDescription)
+                    .toList();
+            OrderLog.logDeliverOrder(order, orderPancakes.get(orderId));
+            orders.remove(orderId);
+            orderPancakes.remove(orderId);
+            return new DeliveryInfo(order, pancakeDescriptions);
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 }
